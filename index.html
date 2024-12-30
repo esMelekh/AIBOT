@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AI Stylist WebApp</title>
+  <title>AI Stylist (Standalone)</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -24,6 +24,7 @@
       height: 300px;
       margin: 10px auto;
       border: 2px solid #ccc;
+      box-sizing: content-box;
     }
     #imageCanvas,
     #maskCanvas {
@@ -41,6 +42,7 @@
       border: none;
       cursor: pointer;
       padding: 0;
+      margin-left: 5px;
     }
     .btn {
       padding: 8px 16px;
@@ -53,169 +55,298 @@
       font-size: 16px;
       padding: 5px;
     }
+    #status {
+      margin: 10px;
+      font-weight: bold;
+      color: #333;
+    }
+    #resultImg {
+      max-width: 100%;
+      border: 2px solid #ccc;
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
 <div class="container">
-  <h1>AI Stylist WebApp</h1>
+  <h1>AI Stylist (Standalone)</h1>
 
   <div class="controls">
     <!-- Разрешаем загружать только изображения -->
     <input type="file" id="imageInput" accept="image/*" class="btn" />
     <br/>
 
-    <!-- Поле prompt -->
     <label for="promptInput">Prompt (описание одежды/стиля):</label><br/>
     <input type="text" id="promptInput" placeholder="Red jacket, long hair..." />
     <br/>
 
     <button id="clearMaskBtn" class="btn">Очистить маску</button>
     <input type="color" id="colorPicker" class="color-picker" value="#ffffff" title="Выберите цвет кисти" />
-    <br/>
 
-    <button id="sendBtn" class="btn">Отправить данные</button>
+    <br/>
+    <button id="generateBtn" class="btn">Generate</button>
   </div>
 
   <div id="canvasContainer">
     <canvas id="imageCanvas" width="300" height="300"></canvas>
     <canvas id="maskCanvas" width="300" height="300"></canvas>
   </div>
+
+  <div id="status"></div>
+  <img id="resultImg" alt="Result" />
+
 </div>
 
 <script>
-  // Если используем в Телеграме, инициализируем WebApp
-  const tg = window.Telegram?.WebApp;
-  if (tg) {
-    tg.expand(); // Разворачиваем на весь экран (необязательно)
-  }
+// ========== ВНИМАНИЕ! =========
+// Здесь захардкожен ваш Replicate-токен + модель. 
+// Держать токен в клиентском JS небезопасно!
+// Подходит лишь для теста / личного проекта.
+//
+//================================
 
-  const CANVAS_WIDTH = 300;
-  const CANVAS_HEIGHT = 300;
+// --- ВСТАВЬТЕ ЗДЕСЬ СВОЙ Replicate-токен ---
+const REPLICATE_API_TOKEN = "r8_ErWMVml6C854W5Zc8p28ZqGALui5kiT0wpAku";
 
-  const imageCanvas = document.getElementById("imageCanvas");
-  const maskCanvas = document.getElementById("maskCanvas");
-  const imageCtx = imageCanvas.getContext("2d");
-  const maskCtx = maskCanvas.getContext("2d");
+// --- Модель (inpainting) ---
+const MODEL_NAME = "stability-ai/stable-diffusion-inpainting";
+const MODEL_VERSION = "95b7223104132402a9ae91cc677285bc5eb997834bd2349fa486f53910fd68b3";
 
-  const imageInput = document.getElementById("imageInput");
-  const promptInput = document.getElementById("promptInput");
-  const clearMaskBtn = document.getElementById("clearMaskBtn");
-  const colorPicker = document.getElementById("colorPicker");
-  const sendBtn = document.getElementById("sendBtn");
+// -------------------------------------
 
-  // Параметры кисти для маски
-  let drawing = false;
-  let brushColor = "#FFFFFF";
-  let brushSize = 10;
+const imageCanvas = document.getElementById("imageCanvas");
+const maskCanvas = document.getElementById("maskCanvas");
+const imageCtx = imageCanvas.getContext("2d");
+const maskCtx = maskCanvas.getContext("2d");
 
-  // ---------------------------
-  // 1) Загрузка изображения
-  // ---------------------------
-  imageInput.addEventListener("change", (e) => {
-    const file = e.target.files[0];
-    if (!file) {
-      console.warn("Файл не выбран");
-      return;
+const imageInput = document.getElementById("imageInput");
+const promptInput = document.getElementById("promptInput");
+const clearMaskBtn = document.getElementById("clearMaskBtn");
+const colorPicker = document.getElementById("colorPicker");
+const generateBtn = document.getElementById("generateBtn");
+const statusDiv = document.getElementById("status");
+const resultImg = document.getElementById("resultImg");
+
+const CANVAS_WIDTH = 300;
+const CANVAS_HEIGHT = 300;
+
+// Параметры рисования маски
+let drawing = false;
+let brushColor = "#FFFFFF";
+let brushSize = 10;
+
+// 1) Загрузка изображения
+imageInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+
+  reader.onload = function(evt) {
+    const img = new Image();
+    img.onload = function() {
+      // Очищаем холст
+      imageCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      // Рассчитываем масштаб
+      const ratio = Math.min(
+        CANVAS_WIDTH / img.width,
+        CANVAS_HEIGHT / img.height
+      );
+      const newW = img.width * ratio;
+      const newH = img.height * ratio;
+      const offsetX = (CANVAS_WIDTH - newW) / 2;
+      const offsetY = (CANVAS_HEIGHT - newH) / 2;
+      imageCtx.drawImage(img, offsetX, offsetY, newW, newH);
+
+      // Очистим маску
+      maskCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      statusDiv.textContent = "Image loaded. Now draw mask where you want to change.";
+      resultImg.src = ""; // Сброс предыдущего результата
+    };
+    img.onerror = function() {
+      alert("Формат не поддерживается или файл повреждён.");
+    };
+    img.src = evt.target.result;
+  };
+
+  reader.onerror = function() {
+    alert("Не удалось прочитать файл.");
+  };
+
+  reader.readAsDataURL(file);
+});
+
+// 2) Рисование на маске
+maskCanvas.addEventListener("mousedown", (e) => {
+  drawing = true;
+  drawMask(e);
+});
+maskCanvas.addEventListener("mousemove", drawMask);
+maskCanvas.addEventListener("mouseup", () => drawing = false);
+maskCanvas.addEventListener("mouseleave", () => drawing = false);
+
+function getMousePos(canvas, evt) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: evt.clientX - rect.left,
+    y: evt.clientY - rect.top
+  };
+}
+
+function drawMask(evt) {
+  if (!drawing) return;
+  const pos = getMousePos(maskCanvas, evt);
+  maskCtx.fillStyle = brushColor;
+  maskCtx.beginPath();
+  maskCtx.arc(pos.x, pos.y, brushSize, 0, 2*Math.PI);
+  maskCtx.fill();
+}
+
+// Очистка маски
+clearMaskBtn.addEventListener("click", () => {
+  maskCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+});
+
+// Смена цвета кисти
+colorPicker.addEventListener("change", (e) => {
+  brushColor = e.target.value;
+});
+
+// 3) Нажатие «Generate» -> отправляем на Replicate
+generateBtn.addEventListener("click", async () => {
+  const imageBase64 = imageCanvas.toDataURL("image/png");
+  const maskBase64 = maskCanvas.toDataURL("image/png");
+  let prompt = promptInput.value.trim() || "A fancy outfit";
+
+  statusDiv.textContent = "Uploading images to Replicate...";
+  resultImg.src = "";
+
+  try {
+    // 1) Загрузим original и mask (через Replicate upload endpoint)
+    const imageUrl = await uploadToReplicate(imageBase64, "original.png");
+    const maskUrl = await uploadToReplicate(maskBase64, "mask.png");
+
+    statusDiv.textContent = "Generating... Please wait (10-30 sec).";
+
+    // 2) Запустим модель inpainting
+    const resultUrl = await runInpainting(imageUrl, maskUrl, prompt);
+    if (!resultUrl) {
+      throw new Error("Empty result from replicate.");
     }
-    const reader = new FileReader();
 
-    reader.onload = function(evt) {
-      const img = new Image();
-      img.onload = function() {
-        // Очищаем canvas
-        imageCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
-        // Рассчитываем масштаб, чтобы вписать в 300×300
-        const ratio = Math.min(
-          CANVAS_WIDTH / img.width,
-          CANVAS_HEIGHT / img.height
-        );
-        const newWidth = img.width * ratio;
-        const newHeight = img.height * ratio;
-        const offsetX = (CANVAS_WIDTH - newWidth) / 2;
-        const offsetY = (CANVAS_HEIGHT - newHeight) / 2;
-
-        imageCtx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
-
-        // Очищаем маску
-        maskCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      };
-      img.onerror = function() {
-        alert("Ошибка: возможно, формат не поддерживается браузером.");
-      };
-      img.src = evt.target.result;
-    };
-
-    reader.onerror = function() {
-      alert("Не удалось прочитать файл. Возможно, он повреждён.");
-    };
-
-    reader.readAsDataURL(file);
-  });
-
-  // ---------------------------
-  // 2) Рисование маски
-  // ---------------------------
-  maskCanvas.addEventListener("mousedown", (e) => {
-    drawing = true;
-    drawMask(e);
-  });
-  maskCanvas.addEventListener("mousemove", drawMask);
-  maskCanvas.addEventListener("mouseup", () => drawing = false);
-  maskCanvas.addEventListener("mouseleave", () => drawing = false);
-
-  function getMousePos(canvas, evt) {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: evt.clientX - rect.left,
-      y: evt.clientY - rect.top
-    };
-  }
-  function drawMask(evt) {
-    if (!drawing) return;
-    const pos = getMousePos(maskCanvas, evt);
-    maskCtx.fillStyle = brushColor;
-    maskCtx.beginPath();
-    maskCtx.arc(pos.x, pos.y, brushSize, 0, 2*Math.PI);
-    maskCtx.fill();
-  }
-
-  // Очистка маски
-  clearMaskBtn.addEventListener("click", () => {
-    maskCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-  });
-
-  // Смена цвета кисти
-  colorPicker.addEventListener("change", (e) => {
-    brushColor = e.target.value;
-  });
-
-  // ---------------------------
-  // 3) Отправка данных (image + mask + prompt)
-  // ---------------------------
-  sendBtn.addEventListener("click", () => {
-    // Генерируем base64-данные
-    const imageBase64 = imageCanvas.toDataURL("image/png");
-    const maskBase64 = maskCanvas.toDataURL("image/png");
-    const prompt = promptInput.value.trim();
-
-    // Пакуем в объект
-    const payload = {
-      imageBase64,
-      maskBase64,
-      prompt
-    };
-
-    // Если это Telegram WebApp:
-    if (tg) {
-      tg.sendData(JSON.stringify(payload));
-      // Можно tg.close(); // если нужно закрыть WebApp
-    } else {
-      // Иначе — просто выводим для отладки
-      console.log("Отправили бы такие данные:", payload);
-      alert("WebApp работает вне Telegram. Данные в консоли.");
+    statusDiv.textContent = "Downloading result...";
+    // 3) Скачаем результат
+    const response = await fetch(resultUrl);
+    if (!response.ok) {
+      throw new Error("Failed to fetch result image.");
     }
+    const blob = await response.blob();
+    const objectURL = URL.createObjectURL(blob);
+    resultImg.src = objectURL;
+
+    statusDiv.textContent = "Done!";
+  } catch (err) {
+    console.error(err);
+    alert("Error: " + err.message);
+    statusDiv.textContent = "Error: " + err.message;
+  }
+});
+
+// ============================
+// ФУНКЦИИ РАБОТЫ С REPLICATE
+// ============================
+async function uploadToReplicate(base64Data, filename="file.png") {
+  // Убираем префикс data:image/png;base64,...
+  const commaIndex = base64Data.indexOf(',');
+  let b64Str = base64Data;
+  if (commaIndex !== -1) {
+    b64Str = base64Data.slice(commaIndex + 1);
+  }
+
+  const fileBytes = base64ToBytes(b64Str);
+
+  const formData = new FormData();
+  formData.append("file", new Blob([fileBytes], { type: "image/png" }), filename);
+
+  const resp = await fetch("https://dreambooth-api-experimental.replicate.com/v1/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Token ${REPLICATE_API_TOKEN}`
+    },
+    body: formData
   });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Upload error: ${errText}`);
+  }
+  const data = await resp.json();
+  return data.url; // URL залитого файла
+}
+
+async function runInpainting(imageUrl, maskUrl, prompt) {
+  // Собираем JSON для POST
+  const payload = {
+    version: MODEL_VERSION, // "95b7223..."
+    input: {
+      image: imageUrl,
+      mask: maskUrl,
+      prompt: `A person wearing ${prompt}`,   // можно расширять как хотите
+      num_inference_steps: 25
+    }
+  };
+
+  // Создадим «предикшен» (запуск модели)
+  let resp = await fetch("https://api.replicate.com/v1/predictions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Token ${REPLICATE_API_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!resp.ok) {
+    throw new Error("Error creating prediction: " + (await resp.text()));
+  }
+  let predData = await resp.json();
+
+  const endpoint = predData.urls.get;
+  let status = predData.status;
+
+  // Ждём, пока статус не будет "succeeded" или "failed"
+  while (status !== "succeeded" && status !== "failed") {
+    await new Promise(resolve => setTimeout(resolve, 3000)); // подождать 3 секунды
+    resp = await fetch(endpoint, {
+      headers: {
+        "Authorization": `Token ${REPLICATE_API_TOKEN}`
+      }
+    });
+    predData = await resp.json();
+    status = predData.status;
+  }
+
+  if (status === "failed") {
+    throw new Error("Replicate failed to generate image.");
+  }
+
+  const output = predData.output;
+  if (!Array.isArray(output) || output.length < 1) {
+    throw new Error("No output from replicate.");
+  }
+  // Возьмём первую картинку
+  return output[0];
+}
+
+// ============================
+// Вспомогательная функция
+// ============================
+function base64ToBytes(base64) {
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    arr[i] = raw.charCodeAt(i);
+  }
+  return arr;
+}
 </script>
 </body>
 </html>
+
