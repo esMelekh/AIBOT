@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Stylist WebApp</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      text-align: center;
+    }
+    #canvasContainer {
+      position: relative;
+      width: 300px;
+      height: 300px;
+      margin: 10px auto;
+      border: 2px solid #ccc;
+    }
+    #imageCanvas,
+    #maskCanvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 300px;
+      height: 300px;
+    }
+    .controls {
+      margin: 10px 0;
+    }
+    .color-picker {
+      width: 35px;
+      height: 35px;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+    .btn {
+      padding: 8px 16px;
+      margin: 5px;
+      cursor: pointer;
+    }
+    #promptInput {
+      width: 80%;
+      margin: 10px 0;
+      font-size: 16px;
+      padding: 5px;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>AI Stylist WebApp</h1>
+
+  <div class="controls">
+    <!-- Разрешаем загружать только изображения -->
+    <input type="file" id="imageInput" accept="image/*" class="btn" />
+    <br/>
+
+    <!-- Поле prompt -->
+    <label for="promptInput">Prompt (описание одежды/стиля):</label><br/>
+    <input type="text" id="promptInput" placeholder="Red jacket, long hair..." />
+    <br/>
+
+    <button id="clearMaskBtn" class="btn">Очистить маску</button>
+    <input type="color" id="colorPicker" class="color-picker" value="#ffffff" title="Выберите цвет кисти" />
+    <br/>
+
+    <button id="sendBtn" class="btn">Отправить данные</button>
+  </div>
+
+  <div id="canvasContainer">
+    <canvas id="imageCanvas" width="300" height="300"></canvas>
+    <canvas id="maskCanvas" width="300" height="300"></canvas>
+  </div>
+</div>
+
+<script>
+  // Если используем в Телеграме, инициализируем WebApp
+  const tg = window.Telegram?.WebApp;
+  if (tg) {
+    tg.expand(); // Разворачиваем на весь экран (необязательно)
+  }
+
+  const CANVAS_WIDTH = 300;
+  const CANVAS_HEIGHT = 300;
+
+  const imageCanvas = document.getElementById("imageCanvas");
+  const maskCanvas = document.getElementById("maskCanvas");
+  const imageCtx = imageCanvas.getContext("2d");
+  const maskCtx = maskCanvas.getContext("2d");
+
+  const imageInput = document.getElementById("imageInput");
+  const promptInput = document.getElementById("promptInput");
+  const clearMaskBtn = document.getElementById("clearMaskBtn");
+  const colorPicker = document.getElementById("colorPicker");
+  const sendBtn = document.getElementById("sendBtn");
+
+  // Параметры кисти для маски
+  let drawing = false;
+  let brushColor = "#FFFFFF";
+  let brushSize = 10;
+
+  // ---------------------------
+  // 1) Загрузка изображения
+  // ---------------------------
+  imageInput.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) {
+      console.warn("Файл не выбран");
+      return;
+    }
+    const reader = new FileReader();
+
+    reader.onload = function(evt) {
+      const img = new Image();
+      img.onload = function() {
+        // Очищаем canvas
+        imageCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+        // Рассчитываем масштаб, чтобы вписать в 300×300
+        const ratio = Math.min(
+          CANVAS_WIDTH / img.width,
+          CANVAS_HEIGHT / img.height
+        );
+        const newWidth = img.width * ratio;
+        const newHeight = img.height * ratio;
+        const offsetX = (CANVAS_WIDTH - newWidth) / 2;
+        const offsetY = (CANVAS_HEIGHT - newHeight) / 2;
+
+        imageCtx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
+
+        // Очищаем маску
+        maskCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      };
+      img.onerror = function() {
+        alert("Ошибка: возможно, формат не поддерживается браузером.");
+      };
+      img.src = evt.target.result;
+    };
+
+    reader.onerror = function() {
+      alert("Не удалось прочитать файл. Возможно, он повреждён.");
+    };
+
+    reader.readAsDataURL(file);
+  });
+
+  // ---------------------------
+  // 2) Рисование маски
+  // ---------------------------
+  maskCanvas.addEventListener("mousedown", (e) => {
+    drawing = true;
+    drawMask(e);
+  });
+  maskCanvas.addEventListener("mousemove", drawMask);
+  maskCanvas.addEventListener("mouseup", () => drawing = false);
+  maskCanvas.addEventListener("mouseleave", () => drawing = false);
+
+  function getMousePos(canvas, evt) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: evt.clientX - rect.left,
+      y: evt.clientY - rect.top
+    };
+  }
+  function drawMask(evt) {
+    if (!drawing) return;
+    const pos = getMousePos(maskCanvas, evt);
+    maskCtx.fillStyle = brushColor;
+    maskCtx.beginPath();
+    maskCtx.arc(pos.x, pos.y, brushSize, 0, 2*Math.PI);
+    maskCtx.fill();
+  }
+
+  // Очистка маски
+  clearMaskBtn.addEventListener("click", () => {
+    maskCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  });
+
+  // Смена цвета кисти
+  colorPicker.addEventListener("change", (e) => {
+    brushColor = e.target.value;
+  });
+
+  // ---------------------------
+  // 3) Отправка данных (image + mask + prompt)
+  // ---------------------------
+  sendBtn.addEventListener("click", () => {
+    // Генерируем base64-данные
+    const imageBase64 = imageCanvas.toDataURL("image/png");
+    const maskBase64 = maskCanvas.toDataURL("image/png");
+    const prompt = promptInput.value.trim();
+
+    // Пакуем в объект
+    const payload = {
+      imageBase64,
+      maskBase64,
+      prompt
+    };
+
+    // Если это Telegram WebApp:
+    if (tg) {
+      tg.sendData(JSON.stringify(payload));
+      // Можно tg.close(); // если нужно закрыть WebApp
+    } else {
+      // Иначе — просто выводим для отладки
+      console.log("Отправили бы такие данные:", payload);
+      alert("WebApp работает вне Telegram. Данные в консоли.");
+    }
+  });
+</script>
+</body>
+</html>
